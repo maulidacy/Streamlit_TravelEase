@@ -71,6 +71,7 @@ st.markdown("""
 }
 .stButton>button:hover {
     background-color: #218838;
+    color: black;
     transform: translateY(-2px);
 }
 .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div>select {
