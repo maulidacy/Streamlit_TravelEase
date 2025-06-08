@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
 import os
+import joblib
 
 load_dotenv()  # Load environment variables from .env file
 
@@ -20,7 +21,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 import string
 import requests # Impor requests untuk panggilan API
 import random
+from sentence_transformers import SentenceTransformer
+import torch
 
+# Instantiate SentenceTransformer model globally with explicit CPU device to avoid meta tensor error
 # --- Konfigurasi Halaman Streamlit ---
 st.set_page_config(
     page_title="Rekomendasi Destinasi Wisata Indonesia",
@@ -28,6 +32,14 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="auto"
 )
+
+try:
+    import os
+    os.environ["TORCH_USE_RTLD_GLOBAL"] = "YES"
+    from sentence_transformers import SentenceTransformer
+    sentence_transformer_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+except Exception as e:
+    sentence_transformer_model = None
 
 # --- Gaya CSS untuk Tampilan Modern ---
 st.markdown("""
@@ -42,8 +54,8 @@ st.markdown("""
 .subheader {
     font-size: 1.8em;
     color: #333;
-    margin-top: 20px;
-    margin-bottom: 15px;
+    margin-top: 40px;
+    margin-bottom: 100px; /* Ini yang menciptakan jarak setelah header */
     border-bottom: 2px solid #2F80ED;
     padding-bottom: 5px;
 }
@@ -106,6 +118,7 @@ st.markdown("""
     padding: 15px;
     margin-bottom: 20px;
     border-radius: 8px;
+    color: #333;
 }
 .warning-box {
     background-color: #fff3cd;
@@ -166,7 +179,7 @@ def get_pexels_images(queries, per_page=1, return_list=False):
     current_cache = multi_image_cache if return_list else image_cache
 
     # Membuat string kunci unik untuk cache
-    cache_key_prefix = "_".join(queries) + f"_{per_page}_{return_list}"
+    cache_key_prefix = "".join(queries) + f"{per_page}_{return_list}"
     
     if cache_key_prefix in current_cache:
         if return_list:
@@ -203,10 +216,12 @@ def get_pexels_images(queries, per_page=1, return_list=False):
                         if url not in used_images:
                             used_images.add(url)
                             return url
+            else:
+                st.warning(f"Tidak ada gambar ditemukan untuk kueri: {query}")
             # Jika tidak ada gambar yang ditemukan untuk kueri saat ini,
             # lanjutkan ke kueri berikutnya
         except requests.exceptions.RequestException as e:
-            # st.warning(f"Tidak dapat mengambil gambar dari Pexels untuk '{query}': {e}.") # Nonaktifkan untuk mengurangi spam warning
+            st.warning(f"Tidak dapat mengambil gambar dari Pexels untuk '{query}': {e}.")
             continue
     return [] if return_list else None
 
@@ -224,14 +239,14 @@ def preprocess_text(text):
     tokens = [word for word in tokens if word not in custom_stop_words]
     return ' '.join(tokens)
 
-st.markdown("<h1 class='main-header'>Rekomendasi Destinasi Wisata Indonesia 🇮🇩</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-header'>Rekomendasi Destinasi Wisata Indonesia</h1>", unsafe_allow_html=True)
 st.markdown("Selamat datang! Rencanakan liburan impian Anda dengan rekomendasi destinasi terbaik di seluruh Indonesia, disesuaikan dengan preferensi Anda.")
 
 # --- Memuat Data dan Pra-pemrosesan (dengan caching) ---
 @st.cache_data
 def load_and_preprocess_data():
     """Memuat dan pra-memproses semua dataset yang diperlukan."""
-    st.info("Memuat dan memproses data destinasi. Mohon tunggu sebentar...")
+    # Suppress info messages for loading and processing
     try:
         df_destinasi = pd.read_csv('destinasi-wisata-indonesia.csv')
         df_tourism_id = pd.read_csv('tourism_with_id.csv')
@@ -311,7 +326,8 @@ def load_and_preprocess_data():
             df_destinations_full['Mapped_Category'] = 'lain-lain'
             st.warning("Kolom 'Category' tidak ditemukan, 'Mapped_Category' diisi dengan 'lain-lain'.")
 
-        st.success("Data destinasi berhasil dimuat dan diproses.")
+        # Suppress success message for data loaded
+        # st.success("Data destinasi berhasil dimuat dan diproses.")
         return df_destinations_full
 
     except FileNotFoundError as e:
@@ -325,7 +341,7 @@ def load_and_preprocess_data():
 @st.cache_resource
 def train_ml_model(df_destinations_full_local):
     """Melatih model klasifikasi dan TF-IDF vectorizer."""
-    st.info("Melatih model klasifikasi dan TF-IDF vectorizer. Ini mungkin memakan waktu sebentar...")
+    # Suppress info messages for training
     np.random.seed(42)
     num_samples = 1000
 
@@ -429,16 +445,32 @@ def train_ml_model(df_destinations_full_local):
 
     destination_tfidf_matrix = tfidf_vectorizer_for_similarity.transform(df_destinations_full_local['Combined_Text_for_Similarity_Processed'].astype(str))
 
-    st.success("Model klasifikasi dan TF-IDF vectorizer berhasil dilatih.")
+    # Suppress success message for model trained
+    # st.success("Model klasifikasi dan TF-IDF vectorizer berhasil dilatih.")
     return model, preprocessor, tfidf_vectorizer_for_model, tfidf_vectorizer_for_similarity, destination_tfidf_matrix
 
 # Memuat data dan melatih model
 df_destinations_full = load_and_preprocess_data()
 model, preprocessor, tfidf_vectorizer_for_model, tfidf_vectorizer_for_similarity, destination_tfidf_matrix = train_ml_model(df_destinations_full.copy())
 
+@st.cache_resource
+def compute_destination_sentence_embeddings(df_destinations, _model_st):
+    """Compute sentence transformer embeddings for destination combined text."""
+    if _model_st is None:
+        return None
+    combined_texts = (df_destinations['Place_Name'].fillna('') + ' ' +
+                      df_destinations['Description'].fillna('') + ' ' +
+                      df_destinations['Mapped_Category'].fillna('') + ' ' +
+                      df_destinations['City'].fillna('')).tolist()
+    embeddings = _model_st.encode(combined_texts, convert_to_tensor=True)
+    return embeddings
+
+destination_sentence_embeddings = compute_destination_sentence_embeddings(df_destinations_full, sentence_transformer_model)
+
 def get_recommendations(holiday_category, activity_type, user_preference_text, df_destinations,
                         city_filter=None, category_filter=None, rating_filter=0,
-                        tfidf_vectorizer_sim=None, dest_tfidf_matrix=None):
+                        model_st=None, dest_tfidf_matrix=None, destination_sentence_embeddings=None, use_sentence_transformer=True,
+                        max_recommendations=10):
     """
     Fungsi untuk mendapatkan rekomendasi destinasi berdasarkan kategori liburan, aktivitas, dan preferensi.
     """
@@ -450,41 +482,62 @@ def get_recommendations(holiday_category, activity_type, user_preference_text, d
         df_destinations['Destination_Budget_Category'] == holiday_category
     ].copy()
 
-    # --- Logika Kesamaan Cosine untuk Preferensi Teks (menggunakan TF-IDF) ---
-    if user_preference_text and user_preference_text.strip() != "" and tfidf_vectorizer_sim and dest_tfidf_matrix is not None:
+    # --- Logika Kesamaan Cosine untuk Preferensi Teks dengan Sentence Transformer --- 
+    if user_preference_text and user_preference_text.strip() != "" and model_st:
         try:
-            processed_user_preference_text = preprocess_text(user_preference_text.strip())
-            user_preference_vector = tfidf_vectorizer_sim.transform([processed_user_preference_text])
+            if use_sentence_transformer:
+                # Use SentenceTransformer model for encoding, not the RandomForestClassifier
+                if hasattr(model_st, 'encode'):
+                    user_preference_embedding = model_st.encode([user_preference_text.strip()], convert_to_tensor=True)
+                else:
+                    st.warning("Model yang diberikan tidak memiliki metode 'encode'. Melanjutkan tanpa filter ini.")
+                    return df_destinations
+            else:
+                # Fallback to TF-IDF vectorizer similarity (if needed)
+                processed_user_preference_text = preprocess_text(user_preference_text.strip())
+                user_preference_embedding = model_st.transform([processed_user_preference_text])
 
             # Pastikan indeks cocok dengan df_destinations_full asli untuk slicing
-            relevant_indices_mask = filtered_destinations.index
-            relevant_tfidf_vectors = dest_tfidf_matrix[relevant_indices_mask]
+            positional_indices = df_destinations_full.index.get_indexer(filtered_destinations.index)
+            # Filter out invalid indices (-1)
+            valid_positional_indices = positional_indices[positional_indices != -1]
+            filtered_destinations_valid = filtered_destinations.iloc[positional_indices != -1]
 
-            if relevant_tfidf_vectors.shape[0] > 0:
-                similarity_scores_filtered = cosine_similarity(user_preference_vector, relevant_tfidf_vectors).flatten()
-                temp_df = filtered_destinations.copy()
+            if use_sentence_transformer:
+                if destination_sentence_embeddings is None:
+                    st.warning("Destination sentence embeddings tidak tersedia. Melanjutkan tanpa filter ini.")
+                    return df_destinations
+                relevant_destination_embeddings_tensor = destination_sentence_embeddings[valid_positional_indices]
+            else:
+                if dest_tfidf_matrix is None:
+                    st.warning("TF-IDF matrix tidak tersedia. Melanjutkan tanpa filter ini.")
+                    return df_destinations
+                relevant_destination_embeddings = dest_tfidf_matrix[valid_positional_indices]
+                relevant_destination_embeddings_tensor = torch.tensor(relevant_destination_embeddings.toarray(), device=user_preference_embedding.device)
+
+            if relevant_destination_embeddings_tensor.shape[0] > 0:
+                similarity_scores_filtered = torch.nn.functional.cosine_similarity(user_preference_embedding, relevant_destination_embeddings_tensor)
+                similarity_scores_filtered = similarity_scores_filtered.cpu().numpy()
+                temp_df = filtered_destinations_valid.copy()
                 temp_df['Similarity_Score'] = similarity_scores_filtered
 
-                SIMILARITY_THRESHOLD = 0.15 # Ambang batas kesamaan (sedikit diturunkan untuk lebih banyak hasil)
+                SIMILARITY_THRESHOLD = 0.25 # Lowered threshold for better matching
                 highly_similar_destinations = temp_df[temp_df['Similarity_Score'] >= SIMILARITY_THRESHOLD].sort_values(by='Similarity_Score', ascending=False)
 
                 if not highly_similar_destinations.empty:
                     filtered_destinations = highly_similar_destinations
                 else:
-                    # Jika tidak ada yang sangat mirip, tetap gunakan semua destinasi yang difilter budget
-                    # dan tambahkan skor kesamaan untuk pengurutan
                     filtered_destinations['Similarity_Score'] = similarity_scores_filtered
                     filtered_destinations = filtered_destinations.sort_values(by='Similarity_Score', ascending=False)
             else:
-                pass # Tidak ada destinasi untuk menghitung kesamaan setelah filter budget
+                pass
 
         except Exception as e:
             st.warning(f"Error memproses preferensi teks dengan kesamaan cosine: {e}. Melanjutkan tanpa filter ini.")
 
 
     # Filter berdasarkan activity_type (Mapped_Category) jika tidak ada kecocokan preferensi teks yang kuat
-    # dan jika user_preference_text tidak diberikan atau kosong
-    if (not user_preference_text or user_preference_text.strip() == "") and activity_type and activity_type != "Semua" and not filtered_destinations.empty:
+    if not (user_preference_text and user_preference_text.strip() != "") and activity_type and activity_type != "Semua" and not filtered_destinations.empty:
         if 'Mapped_Category' in filtered_destinations.columns:
             filtered_destinations = filtered_destinations[
                 filtered_destinations['Mapped_Category'].astype(str).str.contains(activity_type, case=False, na=False)
@@ -536,7 +589,7 @@ def get_recommendations(holiday_category, activity_type, user_preference_text, d
         seen_cities = set()
 
         for index, row in filtered_destinations.iterrows():
-            if len(sampled_place_ids) >= 10:
+            if len(sampled_place_ids) >= max_recommendations:
                 break
 
             place_id = row['Place_Id']
@@ -563,10 +616,10 @@ def get_recommendations(holiday_category, activity_type, user_preference_text, d
                     sampled_place_ids.append(place_id)
                     final_recommendations = pd.concat([final_recommendations, pd.DataFrame([row])], ignore_index=True)
                 
-        # Jika masih kurang dari 10 rekomendasi, tambahkan yang tersisa tanpa mempertimbangkan diversifikasi lagi
-        if len(final_recommendations) < 10:
+        # Jika masih kurang dari max_recommendations rekomendasi, tambahkan yang tersisa tanpa mempertimbangkan diversifikasi lagi
+        if len(final_recommendations) < max_recommendations:
             remaining_destinations = filtered_destinations[~filtered_destinations['Place_Id'].isin(sampled_place_ids)]
-            remaining_to_add = min(10 - len(final_recommendations), len(remaining_destinations))
+            remaining_to_add = min(max_recommendations - len(final_recommendations), len(remaining_destinations))
             if remaining_to_add > 0:
                 final_recommendations = pd.concat([final_recommendations, remaining_destinations.head(remaining_to_add)], ignore_index=True)
 
@@ -591,6 +644,9 @@ if 'selected_destination' not in st.session_state:
 # Fungsi untuk menampilkan halaman detail destinasi
 def display_destination_detail(destination_data):
     st.markdown(f"<h2 class='subheader'>{destination_data['Place_Name']}</h2>", unsafe_allow_html=True)
+
+    # Add vertical space here
+    st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True) # Adds 20px space
 
     # Tombol kembali
     if st.button("← Kembali ke Rekomendasi"):
@@ -669,87 +725,97 @@ else: # Tampilkan halaman utama (input dan rekomendasi)
             total_budget = st.number_input('Total Budget (Rp):', min_value=100000, value=5000000, step=100000, format="%d")
             duration_days = st.slider('Lama Liburan (Hari):', min_value=1, max_value=30, value=5)
             num_adults = st.slider('Jumlah Dewasa:', min_value=1, max_value=10, value=2)
+            num_recommendations = st.number_input('Jumlah Rekomendasi Destinasi:', min_value=1, max_value=50, value=10, step=1)
         with col2:
             activity_type_options = ['Semua', 'alam', 'kuliner', 'belanja', 'budaya', 'petualangan', 'relaksasi', 'sejarah', 'religi', 'keluarga', 'modern', 'lain-lain', 'unknown']
             activity_type = st.selectbox('Jenis Aktivitas Disukai (Opsional):', options=activity_type_options, index=0)
             num_children = st.slider('Jumlah Anak-anak:', min_value=0, max_value=10, value=0)
         user_preference_text = st.text_area(
-            'Keterangan Keinginan Anda (Contoh: "Ingin liburan santai di pantai", "suka makanan pedas"):',
-            value='Saya ingin liburan yang santai, cocok untuk keluarga, dengan banyak pemandangan alam dan tempat foto bagus.',
+            'Keterangan Keinginan Anda:',
             placeholder='Contoh: Ingin liburan santai di pantai, suka makanan pedas, mencari oleh-oleh unik.'
         )
 
         submit_button = st.form_submit_button("Dapatkan Rekomendasi")
 
-    if submit_button:
-        if total_budget <= 0 or duration_days <= 0 or (num_adults + num_children <= 0):
-            st.error("Mohon lengkapi semua input dengan benar (Budget & Durasi harus angka positif, Jumlah Orang > 0).")
-        else:
-            user_input_df = pd.DataFrame([{
-                'total_budget': total_budget,
-                'duration_days': duration_days,
-                'activity_type': activity_type if activity_type != "Semua" else "lain-lain",
-                'user_preference_text': user_preference_text,
-                'num_adults': num_adults,
-                'num_children': num_children
-            }])
-            try:
-                # Pastikan user_preference_text diproses sebelum dikirim ke vectorizer_for_model
-                processed_user_preference_text_for_model = preprocess_text(user_input_df['user_preference_text'].iloc[0])
-                user_input_df['user_preference_text'] = processed_user_preference_text_for_model
+        if submit_button:
+            if total_budget <= 0 or duration_days <= 0 or (num_adults + num_children <= 0):
+                st.error("Mohon lengkapi semua input dengan benar (Budget & Durasi harus angka positif, Jumlah Orang > 0).")
+            else:
+                user_input_df = pd.DataFrame([{
+                    'total_budget': total_budget,
+                    'duration_days': duration_days,
+                    'activity_type': activity_type if activity_type != "Semua" else "lain-lain",
+                    'user_preference_text': user_preference_text,
+                    'num_adults': num_adults,
+                    'num_children': num_children
+                }])
+                try:
+                    # Pastikan user_preference_text diproses sebelum dikirim ke vectorizer_for_model
+                    processed_user_preference_text_for_model = preprocess_text(user_input_df['user_preference_text'].iloc[0])
+                    user_input_df['user_preference_text'] = processed_user_preference_text_for_model
 
-                user_input_processed_numeric_cat = preprocessor.transform(user_input_df.drop(columns=['user_preference_text']))
-                user_input_tfidf = tfidf_vectorizer_for_model.transform(user_input_df['user_preference_text'].fillna(''))
-                user_input_final = np.hstack((user_input_processed_numeric_cat, user_input_tfidf.toarray()))
-                predicted_category = model.predict(user_input_final)[0]
+                    user_input_processed_numeric_cat = preprocessor.transform(user_input_df.drop(columns=['user_preference_text']))
+                    user_input_tfidf = tfidf_vectorizer_for_model.transform(user_input_df['user_preference_text'].fillna(''))
+                    user_input_final = np.hstack((user_input_processed_numeric_cat, user_input_tfidf.toarray()))
+                    predicted_category = model.predict(user_input_final)[0]
 
-                # Calculate cost per person per day
-                estimated_transport_acc_cost_ratio = 0.4
-                total_people = num_adults + num_children
-                if duration_days > 0 and total_people > 0:
-                    cost_per_person_per_day = (total_budget * (1 - estimated_transport_acc_cost_ratio)) / (duration_days * total_people)
-                else:
-                    cost_per_person_per_day = 0
+                    # Calculate cost per person per day
+                    estimated_transport_acc_cost_ratio = 0.4
+                    total_people = num_adults + num_children
+                    if duration_days > 0 and total_people > 0:
+                        cost_per_person_per_day = (total_budget * (1 - estimated_transport_acc_cost_ratio)) / (duration_days * total_people)
+                    else:
+                        cost_per_person_per_day = 0
 
-                # Determine category based on thresholds instead of ML prediction
-                if cost_per_person_per_day < 300000:
-                    category_based_on_threshold = 'Hemat'
-                elif cost_per_person_per_day <= 800000:
-                    category_based_on_threshold = 'Standar'
-                else:
-                    category_based_on_threshold = 'Mewah'
+                    # Determine category based on thresholds instead of ML prediction
+                    if cost_per_person_per_day < 300000:
+                        category_based_on_threshold = 'Hemat'
+                    elif cost_per_person_per_day <= 800000:
+                        category_based_on_threshold = 'Standar'
+                    else:
+                        category_based_on_threshold = 'Mewah'
 
-                st.session_state['predicted_category'] = category_based_on_threshold
-                st.session_state['last_activity_type'] = activity_type
-                st.session_state['last_user_preference_text'] = user_preference_text # Simpan teks asli untuk ditampilkan kembali
-                st.session_state['last_num_adults'] = num_adults
-                st.session_state['last_num_children'] = num_children
-                st.session_state['last_total_budget'] = total_budget
-                st.session_state['last_duration_days'] = duration_days
+                    st.session_state['predicted_category'] = category_based_on_threshold
+                    st.session_state['last_activity_type'] = activity_type
+                    st.session_state['last_user_preference_text'] = user_preference_text # Simpan teks asli untuk ditampilkan kembali
+                    st.session_state['last_num_adults'] = num_adults
+                    st.session_state['last_num_children'] = num_children
+                    st.session_state['last_total_budget'] = total_budget
+                    st.session_state['last_duration_days'] = duration_days
 
-                st.markdown("<h3 class='subheader'>Hasil Rencana Liburan:</h3>", unsafe_allow_html=True)
+                    st.markdown("<h3 class='subheader'>Hasil Rencana Liburan:</h3>", unsafe_allow_html=True)
 
-                st.markdown(f"<div class='info-box'><p><b>Total Budget Anda:</b> Rp {total_budget:,.0f}</p>"
-                                            f"<p><b>Durasi Wisata:</b> {duration_days} hari</p>"
-                                            f"<p><b>Jumlah Orang:</b> {num_adults} Dewasa, {num_children} Anak-anak</p>"
-                                            f"<p><b>Perkiraan Biaya Per Hari Per Orang:</b> Rp {cost_per_person_per_day:,.0f}</p>"
-                                            f"<p><b>Kategori Liburan Prediksi:</b> <span style='color: blue; font-weight: bold;'>{category_based_on_threshold}</span></p></div>", unsafe_allow_html=True)
+                    color_map = {
+                        'Hemat': "#008957FF",     # Light Green
+                        'Standar': '#FFD54F',   # Golden Yellow / Soft Orange
+                        'Mewah': '#FF0000'      # Deep Red / Premium Red
+                    }
+
+                    color = color_map.get(category_based_on_threshold, 'black')
+
+                    st.markdown(f"<div class='info-box'><p><b>Total Budget Anda:</b> Rp {total_budget:,.0f}</p>"
+                                f"<p><b>Durasi Wisata:</b> {duration_days} hari</p>"
+                                f"<p><b>Jumlah Orang:</b> {num_adults} Dewasa, {num_children} Anak-anak</p>"
+                                f"<p><b>Perkiraan Biaya Per Hari Per Orang:</b> Rp {cost_per_person_per_day:,.0f}</p>"
+                                f"<p><b>Kategori Liburan Prediksi:</b> <span style='color: {color}; font-weight: bold;'>{category_based_on_threshold}</span></p></div>", unsafe_allow_html=True)
 
 
-                initial_recommendations = get_recommendations(
-                    category_based_on_threshold,
-                    activity_type,
-                    user_preference_text, # Preferensi teks asli diteruskan ke sini
-                    df_destinations_full,
-                    tfidf_vectorizer_sim=tfidf_vectorizer_for_similarity, # Menggunakan TF-IDF Vectorizer
-                    dest_tfidf_matrix=destination_tfidf_matrix # Menggunakan TF-IDF Matrix
-                )
+                    initial_recommendations = get_recommendations(
+                        category_based_on_threshold,
+                        activity_type,
+                        user_preference_text, # Preferensi teks asli diteruskan ke sini
+                        df_destinations_full,
+                        model_st=sentence_transformer_model, # Menggunakan SentenceTransformer model
+                        dest_tfidf_matrix=destination_tfidf_matrix, # Menggunakan TF-IDF Matrix
+                        destination_sentence_embeddings=destination_sentence_embeddings,
+                        max_recommendations=num_recommendations
+                    )
 
-                st.session_state['current_recommendations'] = initial_recommendations
+                    st.session_state['current_recommendations'] = initial_recommendations
 
-            except Exception as e:
-                st.markdown(f"<div class='error-box'>Error saat mendapatkan rekomendasi: {e}. Mohon coba lagi.</div>", unsafe_allow_html=True)
-                st.session_state['current_recommendations'] = pd.DataFrame()
+                except Exception as e:
+                    st.markdown(f"<div class='error-box'>Error saat mendapatkan rekomendasi: {e}. Mohon coba lagi.</div>", unsafe_allow_html=True)
+                    st.session_state['current_recommendations'] = pd.DataFrame()
 
     # Bagian filter dan tampilan rekomendasi utama (jika sudah ada rekomendasi)
     if 'current_recommendations' in st.session_state and not st.session_state['current_recommendations'].empty:
@@ -785,12 +851,17 @@ else: # Tampilkan halaman utama (input dan rekomendasi)
                     city_filter=city_filter,
                     category_filter=category_filter,
                     rating_filter=rating_filter,
-                    tfidf_vectorizer_sim=tfidf_vectorizer_for_similarity, # Menggunakan TF-IDF Vectorizer
-                    dest_tfidf_matrix=destination_tfidf_matrix # Menggunakan TF-IDF Matrix
+                    model_st=sentence_transformer_model, # Menggunakan SentenceTransformer model
+                    dest_tfidf_matrix=destination_tfidf_matrix, # Menggunakan TF-IDF Matrix
+                    destination_sentence_embeddings=destination_sentence_embeddings,
+                    max_recommendations=st.session_state.get('num_recommendations', 10)
                 )
                 st.session_state['current_recommendations'] = filtered_recommendations
+                
 
         st.markdown("<h3 class='subheader'>Destinasi Rekomendasi Anda:</h3>", unsafe_allow_html=True)
+        # Tambahkan spasi vertikal ekstra secara spesifik di sini
+        st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True) # Sesuaikan 20px sesuai kebutuhan
 
         if not st.session_state['current_recommendations'].empty:
             for index, row in st.session_state['current_recommendations'].iterrows():
@@ -816,7 +887,7 @@ else: # Tampilkan halaman utama (input dan rekomendasi)
                 with col_img:
                     st.image(image_url, use_container_width=True)
                 with col_text:
-                    st.markdown(f"**{row['Place_Name']}**", unsafe_allow_html=True)
+                    st.markdown(f"{row['Place_Name']}", unsafe_allow_html=True)
                     st.markdown(f"<p style='font-size: 0.9em; margin-bottom: 0;'>Lokasi: {row['City']}</p>", unsafe_allow_html=True)
                     st.markdown(f"<p style='font-size: 0.9em; margin-bottom: 0;'>Rating: {row['Rating']:.1f} / 5</p>", unsafe_allow_html=True)
                     st.markdown(f"<p style='font-size: 0.9em; color: green; font-weight: bold;'>{row['Destination_Budget_Category']}</p>", unsafe_allow_html=True)
