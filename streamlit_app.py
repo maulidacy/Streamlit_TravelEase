@@ -1172,3 +1172,8 @@ if len(st.session_state['full_filtered_recommendations']) > 0:
 
 else:
     pass
+
+# --- Footer with Author Name Only ---
+st.markdown("<hr>", unsafe_allow_html=True)
+st.markdown("<footer style='font-size: 0.7em; color: gray; text-align: center; margin-top: 20px;'>"
+            "Hak Cipta © 2025 TravelEase</footer>", unsafe_allow_html=True)
