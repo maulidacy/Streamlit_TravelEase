@@ -199,7 +199,7 @@ st.markdown("""
 def load_sentence_transformer_model():
     try:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+        model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device=device)
         return model
     except Exception as e:
         st.error(f"Gagal memuat model SentenceTransformer: {e}. Rekomendasi berdasarkan teks mungkin terpengaruh.")
