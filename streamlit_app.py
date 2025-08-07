@@ -18,11 +18,7 @@ from sklearn.ensemble import RandomForestClassifier
 
 # --- Load Environment Variables ---
 load_dotenv()
-# Mengubah variabel API key dari PEXELS_API_KEY menjadi PIXABAY_API_KEY
-# Pastikan Anda telah mengatur variabel lingkungan PIXABAY_API_KEY di sistem Anda,
-# atau ganti ini dengan kunci API Anda secara langsung jika Anda tidak menggunakan .env
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY")
-# Atau, jika Anda ingin menyertakan langsung di kode (TIDAK DISARANKAN untuk produksi):
 PIXABAY_API_KEY = "50961599-afae2344cae9faf87eae65a78"
 
 
