@@ -110,7 +110,7 @@ Kami sangat terbuka untuk kontribusi dari komunitas! Jika Anda ingin berkontribu
 4. Push ke branch: `git push origin feature/AmazingFeature`.
 5. Buat Pull Request.
 
-Silakan baca [CONTRIBUTING.md](CONTRIBUTING.md) untuk panduan lebih detail. Ide, bug report, atau saran sangat diterima di [Issues](https://github.com/username/TravelEase/issues).
+Silakan baca [CONTRIBUTING.md](CONTRIBUTING.md) untuk panduan lebih detail. Ide, bug report, atau saran sangat diterima di [Issues](https://github.com/maulidacy/Streamlit_TravelEase/issues).
 
 ## Lisensi
 
@@ -121,3 +121,4 @@ Proyek ini dilisensikan di bawah **MIT License**. Lihat file [LICENSE](LICENSE) 
 **TravelEase** - Jadikan liburan Anda lebih mudah dan menyenangkan! 🌴✨
 
 *Dibuat oleh Maulida Cahya*
+
